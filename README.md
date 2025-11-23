@@ -181,14 +181,14 @@ Detta genererar en strukturerad guide som använder flera verktyg för att analy
 
 ### Render (Docker)
 
-Render-deploymenten använder en Dockerfile för att säkerställa en konsekvent bygg- och körmiljö för både lokalt bruk och den publicerade MCP-URL:en `https://scb-mcp.onrender.com/mcp`.
+Render-deploymenten använder nu en Dockerfile för att säkerställa en konsekvent bygg- och körmiljö för både lokalt bruk och den publicerade MCP-URL:en `https://scb-mcp.onrender.com/mcp`.
 
-**Viktigt:** Om Render-loggen visar att den “Requesting Node.js version ...” bygger tjänsten inte från Dockerfilen. Skapa då en ny tjänst via Blueprint eller ändra tjänstens runtime till **Docker**.
-
-1. Deploya via [Deploy to Render](https://dashboard.render.com/blueprints) och peka på det här repo:t (Render läser `render.yaml`).
-2. Verifiera under **Runtime** att Docker är valt och att `./Dockerfile` används.
-3. (Om tjänsten redan finns) Uppdatera befintlig tjänst till Docker-runtime eller skapa en ny med blueprinten för att undvika Node-buildpack.
-4. Efter deploy är MCP-endpointen tillgänglig på `/mcp` (GET för metadata, POST för JSON-RPC)
+1. Skapa/uppdatera en Web Service på [render.com](https://render.com) med den här repo:n
+2. Render läser automatiskt `render.yaml` och bygger med Dockerfile:
+   - **Runtime**: Docker
+   - **Dockerfile**: `./Dockerfile`
+   - **Env vars**: `NODE_ENV=production`, `PORT=3000`
+3. Efter deploy är MCP-endpointen tillgänglig på `/mcp` (GET för metadata, POST för JSON-RPC)
 
 ### Lokalt med Docker
 
