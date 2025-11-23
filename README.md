@@ -186,6 +186,10 @@ Render-deploymenten använder en Dockerfile för att säkerställa en konsekvent
 **Viktigt:** Om Render-loggen visar att den “Requesting Node.js version ...” bygger tjänsten inte från Dockerfilen.
 
 1. Skapa eller redeploya **alltid** via Blueprint-läget: [Deploy to Render](https://dashboard.render.com/blueprints) → välj repo:t → Render hittar `render.yaml` i roten.
+2. Om Render ändå försöker köra Node-buildpacken stoppar installationen numera med ett tydligt felmeddelande. Det är avsiktligt för att tvinga Docker-runtime.
+3. Kontrollera att tjänsten har `Runtime: Docker` och att både **Docker Context** och **Dockerfile** pekar på projektroten (`.`) respektive `./Dockerfile`.
+4. Om du redan har en Node-baserad tjänst: skapa en **ny** tjänst med blueprinten (Render byter inte alltid runtime på befintliga tjänster även om `render.yaml` uppdateras) och radera/pausa den gamla.
+5. Efter deploy är MCP-endpointen tillgänglig på `/mcp` (GET för metadata, POST för JSON-RPC).
 2. Kontrollera att tjänsten har `Runtime: Docker` och att både **Docker Context** och **Dockerfile** pekar på projektroten (`.`) respektive `./Dockerfile`.
 3. Om du redan har en Node-baserad tjänst: skapa en **ny** tjänst med blueprinten (Render byter inte alltid runtime på befintliga tjänster även om `render.yaml` uppdateras) och radera/pausa den gamla.
 4. Efter deploy är MCP-endpointen tillgänglig på `/mcp` (GET för metadata, POST för JSON-RPC).
