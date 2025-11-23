@@ -1,12 +1,10 @@
 services:
   - type: web
     name: scb-mcp-http
-    env: node
+    env: docker
     region: frankfurt
     plan: free
-    buildCommand: npm install && npm run build
-    startCommand: npm start
-    healthCheckPath: /health
+    dockerfilePath: ./Dockerfile
     envVars:
       - key: NODE_ENV
         value: production
