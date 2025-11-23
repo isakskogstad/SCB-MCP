@@ -190,6 +190,9 @@ Render-deploymenten använder en Dockerfile för att säkerställa en konsekvent
 3. Kontrollera att tjänsten har `Runtime: Docker` och att både **Docker Context** och **Dockerfile** pekar på projektroten (`.`) respektive `./Dockerfile`.
 4. Om du redan har en Node-baserad tjänst: skapa en **ny** tjänst med blueprinten (Render byter inte alltid runtime på befintliga tjänster även om `render.yaml` uppdateras) och radera/pausa den gamla.
 5. Efter deploy är MCP-endpointen tillgänglig på `/mcp` (GET för metadata, POST för JSON-RPC).
+2. Kontrollera att tjänsten har `Runtime: Docker` och att både **Docker Context** och **Dockerfile** pekar på projektroten (`.`) respektive `./Dockerfile`.
+3. Om du redan har en Node-baserad tjänst: skapa en **ny** tjänst med blueprinten (Render byter inte alltid runtime på befintliga tjänster även om `render.yaml` uppdateras) och radera/pausa den gamla.
+4. Efter deploy är MCP-endpointen tillgänglig på `/mcp` (GET för metadata, POST för JSON-RPC).
 
 ### Lokalt med Docker
 
