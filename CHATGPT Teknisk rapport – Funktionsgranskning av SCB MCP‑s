@@ -1,0 +1,509 @@
+Teknisk rapport – Funktionsgranskning av SCB MCP‑server utförd med ChatGPT 
+
+Syfte:
+Denna rapport sammanfattar fel, brister och förbättringsförslag för SCB‑MCP‑servern. Målgruppen är utvecklare som ska förbättra serverns robusthet, konsekvens och utvecklarvänlighet.
+
+1. Översikt
+1.1. Testad funktionalitet
+Följande tools testades:
+
+scb_get_api_status
+scb_check_usage
+scb_search_tables
+scb_get_table_info
+scb_get_table_data
+scb_get_table_variables
+scb_search_regions
+scb_find_region_code
+scb_test_selection
+scb_preview_data
+1.2. Testmetodik (kort)
+Medvetet varierad input:
+Giltiga/ogiltiga tableId.
+Giltiga/ogiltiga language (t.ex. sv, en, de).
+Parametrar på gränsvärden (t.ex. pageSize > max).
+Normala och felaktiga regionnamn.
+Fokus på:
+Konsistens mellan tools.
+Felmeddelanden (format, tydlighet, stabilitet).
+Faktiskt beteende vs dokumenterad/intenderad semantik.
+2. Tvärgående problem
+2.1. Inkonsekvent hantering av language
+Observationer:
+
+Scheman och beskrivningar säger att language ska vara sv eller en.
+
+Faktiskt beteende varierar kraftigt mellan tools vid t.ex. language: "de":
+
+scb_search_tables
+
+Accepterar "de" utan fel; ekar tillbaka "language": "de".
+Resultaten är ändå på svenska.
+Ingen varning eller indikation på fallback.
+scb_search_regions("Göteborg", "de")
+
+Returnerar:
+{
+  "matches": [],
+  "message": "No regions found matching \"Göteborg\"",
+  "common_regions": [
+    {"code": "1480", "name": "Göteborg", "type": "municipality"},
+    ...
+  ]
+}
+Dvs: uppger att inget hittats, trots att en relevant region presenteras i common_regions.
+scb_find_region_code("goteborg", "TAB1729", "de")
+
+Returnerar ett fel med rått SCB‑API-svar:
+"error": {
+  "type": "region_search_failed",
+  "message": "API request failed: 400 Bad Request: {\"type\":\"Parameter error\",\"title\":\"Unsupported language\",\"status\":400}"
+}
+Problemtyp:
+
+Inkonsekvent validering på MCP‑nivå.
+Flera olika beteenden för samma typ av fel:
+Tyst fallback.
+Felaktigt ”No results”.
+Rå API‑error.
+Förslag till åtgärd:
+
+Central validering av språk i MCP‑lagret:
+
+Tillåt endast sv och en.
+Vid annan input:
+Antingen:
+{
+  "error": {
+    "type": "unsupported_language",
+    "message": "Unsupported language 'de'. Use 'sv' or 'en'."
+  }
+}
+Eller fallbacka deterministiskt, t.ex.:
+{
+  "language_requested": "de",
+  "language_used": "sv",
+  "warning": "Unsupported language 'de'. Defaulted to 'sv'.",
+  ...
+}
+Samma policy i samtliga tools
+Alla verktyg ska:
+
+Antingen alltid kasta ett strukturerat unsupported_language‑fel för otillåtna språk.
+Eller alltid fallbacka på samma sätt.
+2.2. Felhantering generellt – råa och inkonsekventa fel
+Observationer:
+
+Flera tools returnerar fel som okontrollerade strängar direkt från SCB‑API:t, t.ex.:
+
+Error: API request failed: 404 Not Found: {"type":"Parameter error","title":"Non-existent table","status":404}
+I ett fall är HTTP‑statusen i texten 400 men den inbäddade JSON:en har status:404:
+
+API request failed: 400 Bad Request: {"type":"Parameter error","title":"Non-existent table","status":404}
+Problemtyp:
+
+Klienter måste parsa text för att förstå feltypen.
+Både 400 och 404 förekommer i samma fel → svårt att veta vad som egentligen gäller.
+Ingen konsekvent intern felstruktur på MCP‑nivå.
+Förslag till åtgärd:
+
+Inför en enhetlig felmodell för MCP‑tools, t.ex.:
+
+{
+  "error": {
+    "type": "non_existent_table",
+    "http_status": 404,
+    "title": "Non-existent table",
+    "detail": {
+      "tableId": "TAB_DOES_NOT_EXIST",
+      "scb_payload": { ... }  // valfritt, för debugging
+    }
+  }
+}
+Mappa SCB‑API:s feltyper till ett litet antal väldefinierade MCP‑fel:
+
+non_existent_table
+unsupported_language
+invalid_parameter
+rate_limit_exceeded
+internal_error (för MCP‑buggar)
+3. Per tool – fel och förbättringar
+3.1. scb_search_tables
+Tester:
+
+Sökning med:
+query: "befolkning", category: "population", language: "sv", pageSize: 5
+query: "arbetslöshet", category: "labour", language: "de", pageSize: 3
+query: "inkomst", category: "economy", language: "sv", pageSize: 200
+3.1.1. Kategorifältet (category) är missvisande
+Parametern category begränsar sökningen (enligt metadata).
+Men varje tabell i svaret har category: "public".
+metadata.has_category_filter: true och metadata.total_filtered ändras, så filtrering sker – men resultatets category berättar inget om population/labour/economy etc.
+Problem:
+
+Utvecklare kan felaktigt tro att table.category === "population" etc., vilket inte stämmer.
+Förslag:
+
+Antingen:
+Homogenisera så att resultatets category är i samma domän som sökparametern (population, labour, ...).
+Eller:
+Dokumentera tydligt att:
+query.category_filter är en intern filterkategori,
+table.category avspeglar SCB:s egna klassificering (t.ex. "public").
+3.1.2. pageSize > max hanteras inte korrekt
+Dokumentation/schemat säger: pageSize max 100.
+I testet användes pageSize: 200:
+Accepts utan fel.
+pagination.page_size sätts till 200.
+pagination.total_results: 154.
+Den faktiska listan hade färre rader än 154 (och troligen färre än 200).
+Problem:
+
+page_size beskriver önskat antal, inte faktiskt antal returnerade poster.
+Max‑gränsen dokumenteras, men implementeras inte.
+Förslag:
+
+Validera pageSize i MCP:
+
+Om pageSize > 100:
+Antingen kasta valideringsfel:
+{
+  "error": {
+    "type": "invalid_parameter",
+    "message": "pageSize 200 exceeds max 100"
+  }
+}
+Eller auto‑justera till 100, och ange:
+{
+  "pagination": {
+    "page_size_requested": 200,
+    "page_size_used": 100,
+    ...
+  }
+}
+Dokumentera tydligt hur pagination.total_results, metadata.total_filtered och metadata.total_unfiltered ska tolkas (total globalt vs totalt efter filter vs på aktuell sida).
+
+3.2. scb_get_table_info
+Tester:
+
+Giltig tabell: TAB2893, språk sv och en.
+Ogiltig tabell: TAB_DOES_NOT_EXIST.
+Funktionellt:
+
+För giltiga tabeller fungerar det bra:
+Vettig metadata (antal celler, variabler).
+Språket byter labels korrekt (sex vs kön, age vs ålder).
+Brister:
+
+Se avsnitt 2.2 om felhantering vid ogiltiga tableId.
+Förslag:
+
+Endast felstrukturen behöver normaliseras; i övrigt fungerar tool:et som avsett.
+3.3. scb_get_table_data
+Tester:
+
+tableId: "TAB2893", language: "sv" (giltig).
+tableId: "TAB_DOES_NOT_EXIST", language: "sv" (ogiltig).
+3.3.1. Beteende motsvarar inte ”full data”
+Enligt scb_get_table_info för TAB2893:
+Total Data Cells: 57,216.
+scb_get_table_data("TAB2893") returnerar:
+Exakt 24 rader.
+metadata.data_shape: [8, 1, 1, 3] (ålder × contents × tid × kön).
+Dvs. MCP:n gör en implicit begränsning (senaste månad, en innehållskod), vilket överensstämmer med preview‑mönster, inte full datahämtning.
+
+Problem:
+
+Namn och beskrivning tyder på att funktionen hämtar ”tabellens data”.
+I praktiken får man endast ett litet urval.
+scb_preview_data har nästan identiskt beteende → ”dubbla” funktioner med oklar skillnad.
+Förslag:
+
+Klargör och justera semantiken:
+
+Alternativ A – ”Full data”:
+
+Låt scb_get_table_data hämta allt som SCB‑API:t tillåter inom 150 000 celler.
+Inför ett extra fält i svaret om data trunkerats på grund av SCB:s gränser.
+För större tabeller: returnera fel med förslag att använda mer selektivt API.
+Alternativ B – ”Smart default selection”:
+
+Dokumentera explicit t.ex.:
+Väljer senaste värdet för Tid.
+Väljer första ContentsCode.
+Returnerar alla kategorivariabler (ålder, kön, etc).
+Uppdatera tool‑beskrivningen så att utvecklare inte tror att detta är full dump.
+Harmonisering med scb_preview_data:
+
+Besluta om:
+scb_preview_data = minimal subset (t.ex. max N rader, endast totaler).
+scb_get_table_data = större subset med samma selection‑logik, men fler dimensioner.
+Dokumentera konkreta skillnader.
+Felhantering vid ogiltigt tableId:
+
+Normalisera fel (se 2.2).
+3.4. scb_get_table_variables
+Tester:
+
+tableId: "TAB2893", language: "sv", variableName: "kön".
+tableId: "TAB2893", language: "sv", variableName: "" (tom sträng).
+Funktionellt:
+
+Med variableName: "kön":
+Returnerar korrekt endast könsvariabeln (Kon), med koder/etiketter och usage‑exempel.
+Med variableName: "":
+Tolkad som ”ingen filter” → retur av samtliga variabler.
+I svaret syns variable_filter: null.
+Problem:
+
+Schemat säger att variableName är required.
+Dokumentation säger att parametern är optional.
+”Tricket” att skicka tom sträng för att få alla variabler är inofficiellt och otydligt.
+Förslag:
+
+Ändra schemaspec:
+
+type scb_get_table_variables = {
+  tableId: string;
+  language: string;
+  variableName?: string;  // gör optional
+}
+Beteende:
+
+Om variableName utelämnas:
+returnera alla variabler (variable_filter: null).
+Om variableName finns men inte matchar någon variabel:
+returnera tom lista + varning:
+{
+  "variables": [],
+  "warning": "No variable named 'Region' in table TAB2893"
+}
+I stort är själva strukturen på svaret (sample_values, usage_example) mycket bra och behöver inte ändras, bara input‑kontraktet.
+
+3.5. scb_search_regions
+Tester:
+
+query: "Stockholm", language: "sv".
+query: "Lerum", language: "en".
+query: "Göteborg", language: "de".
+Funktionellt vid giltiga språk:
+
+Stockholm gav regioner med koder 01, 0180, STAT01 + usage‑exempel.
+Lerum på engelska gav korrekt kommunkod 1441.
+Brister:
+
+Vid ogiltigt språk (language: "de"):
+matches: [], trots relevant träff.
+Samtidigt presenteras en lista common_regions där bl.a. Göteborg finns med korrekt kod.
+message: "No regions found matching "Göteborg"" är objektivt felaktigt.
+Förslag:
+
+Se 2.1 om språkvalidering.
+
+Förutom språk:
+Troligen gör SCB‑API:t språkberoende sökning, men common_regions är en lokal fallback. Bättre hade varit:
+
+{
+  "error": {
+    "type": "unsupported_language",
+    "message": "Unsupported language 'de' for region search. Use 'sv' or 'en'."
+  }
+}
+än att hävda att inga regioner hittats.
+
+3.6. scb_find_region_code
+Tester:
+
+query: "Lerum", tableId: "TAB1729", language: "sv" → OK, exakt träff 1441.
+query: "goteborg", tableId: "TAB1729", language: "de" → språkfel.
+query: "Goteborg", tableId: "TAB1729", language: "sv" → inga träffar, men common_codes föreslår bl.a. Göteborg.
+3.6.1. Språkfel (ogiltigt språk)
+Se 2.1 – här bubblas SCB:s 400/Unsupported language upp som rå sträng.
+3.6.2. Ingen enkel normalisering av regionnamn
+Input Goteborg (utan ö) matchar inte Göteborg, trots att common_codes innehåller:
+
+{"code": "1480", "name": "Gothenburg (Göteborg)"}
+Förslag:
+
+Samma språkpolicy som för scb_search_regions.
+
+Förbättrat matchande:
+
+Normalisera query:
+Case-insensitive.
+Enkla diakritiska ersättningar (ö/o, ä/a, å/a).
+Om exakt match misslyckas:
+Gör en ”fuzzy” match mot kända regionnamn (t.ex. via scb_get_table_variables → regionlista).
+Om inga träffar trots normalisering:
+
+Returnera tydlig hjälp:
+{
+  "error": {
+    "type": "region_not_found",
+    "query": "Goteborg",
+    "suggestions": [
+      {"code": "1480", "name": "Göteborg"},
+      ...
+    ]
+  }
+}
+3.7. scb_test_selection – kritisk bugg
+Tester:
+
+tableId: "TAB2893", language: "sv" (ingen ytterligare selection kunde anges i verktygsspecen).
+Resultat:
+
+Selection Test Failed
+
+❌ Could not validate selection: Cannot convert undefined or null to object
+Analys:
+
+Felet tyder på en runtime‑bugg i MCP‑implementationen (t.ex. Object.keys(undefined)).
+
+Tool‑schemat definierar endast:
+
+tableId
+language (optional)
+Ingen selection‑parameter finns, men implementationen försöker sannolikt arbeta mot en selection (som då blir undefined/null).
+
+Konsekvens:
+
+Tool:et är i praktiken obrukbart i nuvarande form.
+Syftet – att kunna verifiera en selection innan full datahämtning – uppnås inte.
+Förslag (minsta åtgärd):
+
+Justera schemat:
+
+type scb_test_selection = {
+  tableId: string;
+  language?: string;
+  selection: {
+    [variableCode: string]: string[];
+  };
+}
+Implementationsfix:
+
+Säkerställ att selection alltid initieras till ett objekt ({}) om den är tom.
+Kontrollera att tom selection antingen:
+tolkas som ”defaultselection” (t.ex. senaste Tid etc.), eller
+explicit förbjuds med fel:
+{
+  "error": {
+    "type": "missing_selection",
+    "message": "selection is required for scb_test_selection"
+  }
+}
+Om tanken är att testa MCP:ns egen defaultselection (samma som i scb_get_table_data):
+
+Skapa en intern defaultselection innan SCB‑anropet, istället för att arbeta mot undefined.
+3.8. scb_preview_data
+Tester:
+
+tableId: "TAB2893", language: "sv".
+Resultat:
+
+Fungerar och returnerar:
+Begränsad subset (24 rader, samma form som scb_get_table_data gör idag).
+Tydlig metadata:
+preview_info.is_preview: true
+metadata.data_shape, dimensions, summary.
+Brister:
+
+Semantiskt nästan identisk med scb_get_table_data i nuvarande implementation.
+För användare blir skillnaden oklar:
+Båda kräver endast tableId+language.
+Båda returnerar en liten snapshot.
+Förslag:
+
+Dokumentera den exakta ”previewregeln”, t.ex.:
+
+Senaste Tid.
+Första ContentsCode.
+Alla kombinationer av övriga dimensioner, upp till ett maxantal rader (t.ex. 50).
+Klargör skillnaden gentemot scb_get_table_data (se 3.3.1) och, om möjligt, differentiera dem funktionellt.
+
+3.9. scb_get_api_status och scb_check_usage
+Tester:
+
+Flera anrop efter varandra av olika tools, därefter scb_get_api_status och scb_check_usage.
+Observationer:
+
+scb_get_api_status gav t.ex.:
+
+Requests Made: 1/30
+Remaining Requests: 29
+Efter att många fler tools körts visade scb_check_usage:
+
+Requests Made: 2
+Remaining: 28
+Detta speglar inte faktiskt antal gjorda MCP‑anrop; räkningen verkar inte inkludera alla anrop konsekvent, eller så räknas bara just dessa två tools.
+
+Problem:
+
+Utvecklare kan inte lita på att dessa värden motsvarar verklig belastning mot SCB:s faktiska rate limit (30 calls/10 sek).
+Förslag:
+
+Besluta vad ”Requests Made” ska representera:
+
+Antingen:
+Alla utgående anrop mot SCB‑API:t från MCP‑servern inom fönstret.
+Eller:
+Endast anrop via just dessa tools (scb_get_api_status / scb_check_usage).
+Implementera en central räknare:
+
+Alla SCB‑anrop (oavsett tool) passerar genom ett rate‑limit och metering‑lager.
+scb_check_usage hämtar statistik därifrån.
+Dokumentera semantics:
+
+Är detta en uppskattning eller en exakt spegling av SCB:s headers?
+Kan olika klienter dela på kvoten (t.ex. samma API‑nyckel)?
+4. Ytterligare observationer
+4.1. Kod- vs namn‑fält i datatabeller
+I scb_preview_data / scb_get_table_data används fält som:
+sex_code, sex_name
+age_code, age_name
+year_code, year_name
+Detta avviker från SCB:s original (t.ex. dimensioner Kon, Alder, Tid), men är mer läsbart.
+Förslag:
+
+Dokumentera mappingen tydligt:
+
+*_code = värdet som används i selection mot SCB (kod).
+*_name = etiketten som SCB returnerar.
+Lista gärna ett exempel per standarddimension (region, kön, tid, etc.) i dokumentationen.
+
+5. Prioriterad åtgärdsplan
+För att göra MCP‑servern tydligt bättre ur utvecklarperspektiv rekommenderas följande prioritetsordning:
+
+Kritiska buggar
+
+Fixa scb_test_selection (schemat + implementation) så att verktyget går att använda.
+Normalisera felhantering för ogiltiga tabeller och språk (non_existent_table, unsupported_language).
+Konsekvent språkhantering
+
+Validera language i alla tools.
+Välj en enhetlig policy (avvisa eller fallbacka) och implementera konsekvent.
+Klargör dataselektionssemantik
+
+Tydliggör vad scb_get_table_data respektive scb_preview_data gör och hur de skiljer sig.
+Justera namn eller beteende så att de matchar verklig funktionalitet.
+Parameter- och pagineringslogik
+
+Enforce:a pageSize‑max i scb_search_tables.
+Dokumentera och/eller justera pagination- och metadata‑fälten så att de reflekterar faktisk data.
+Regionverktyg – bättre UX
+
+Språkvalidering för scb_search_regions / scb_find_region_code.
+Enkla heuristiker för stavning/diakritik (”Goteborg” → ”Göteborg”).
+Mer hjälpsamma felmeddelanden med tydliga förslag.
+Usage‑rapportering
+
+Se till att scb_check_usage visar en meningsfull bild av nuvarande anropsbelastning (eller dokumentera begränsningarna).
+6. Avslutning
+MCP‑servern fungerar i stort sett för grundläggande användningsfall (sökning av tabeller, hämtning av metadata, enklare datahämtning). De viktigaste problemen ligger i:
+
+Inkonsekvent och ibland felaktig felhantering.
+Otydlig semantik kring dataurval (”preview vs full data”).
+Ett par rena implementationbuggar (scb_test_selection).
+Små men viktiga UX‑problem kring språk- och regionhantering.
+Genom att åtgärda de identifierade punkterna – framför allt de kritiska buggarna, språkvalidering och felhanteringsmodellen – kan MCP‑servern bli betydligt mer robust och förutsägbar för klienter.
